@@ -15,6 +15,7 @@ pub enum ProveError {
 }
 
 /// Task prover that generates proofs using the existing prover module
+#[derive(Clone)]
 pub struct TaskProver {
     event_sender: EventSender,
     config: WorkerConfig,

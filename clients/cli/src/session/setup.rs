@@ -53,26 +53,25 @@ fn clamp_threads_by_memory(requested_threads: usize) -> usize {
 /// Warn the user if their available memory seems insufficient for the task(s) at hand
 pub fn warn_memory_configuration(max_threads: Option<u32>) {
     if let Some(threads) = max_threads {
-        let current_pid = Pid::from(std::process::id() as usize);
-
         let mut sysinfo = System::new();
-        sysinfo.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[current_pid]),
-            true, // Refresh exact processes
-            ProcessRefreshKind::nothing().with_memory(),
-        );
+        sysinfo.refresh_memory();
 
-        if let Some(process) = sysinfo.process(current_pid) {
-            let ram_total = process.memory();
-            if threads as u64 * crate::consts::cli_consts::PROJECTED_MEMORY_REQUIREMENT >= ram_total
-            {
-                crate::print_cmd_warn!(
-                    "OOM warning",
-                    "Projected memory usage across {} requested threads exceeds memory currently available to process. In the event that proving fails due to an out-of-memory error, please restart the Nexus CLI with a smaller value supplied to `--max-threads`.",
-                    threads
-                );
-                std::thread::sleep(std::time::Duration::from_secs(3));
-            }
+        // Get total system memory (not just current process memory)
+        let total_system_memory = sysinfo.total_memory();
+        
+        // Use 75% of system memory as available (reserve 25% for OS/other processes)
+        let available_memory = (total_system_memory as f64 * 0.75) as u64;
+        let projected_usage = threads as u64 * crate::consts::cli_consts::PROJECTED_MEMORY_REQUIREMENT;
+
+        if projected_usage >= available_memory {
+            crate::print_cmd_warn!(
+                "OOM warning",
+                "Projected memory usage ({:.1} GB) across {} requested threads exceeds available memory ({:.1} GB). In the event that proving fails due to an out-of-memory error, please restart the Nexus CLI with a smaller value supplied to `--max-threads`.",
+                projected_usage as f64 / (1024.0 * 1024.0 * 1024.0),
+                threads,
+                available_memory as f64 / (1024.0 * 1024.0 * 1024.0)
+            );
+            std::thread::sleep(std::time::Duration::from_secs(3));
         }
     }
 }
@@ -115,7 +114,16 @@ pub async fn setup_session(
     // Clamp the number of workers to [1, 75% of num_cores]. Leave room for other processes.
     let total_cores = crate::system::num_cores();
     let max_workers = ((total_cores as f64 * 0.75).ceil() as usize).max(1);
-    let mut num_workers: usize = max_threads.unwrap_or(1).clamp(1, max_workers as u32) as usize;
+    
+    // If no max_threads specified, default to optimal thread count based on available resources
+    let default_threads = if max_threads.is_none() {
+        // Default to 50% of cores for balanced performance (conservative but better than 1)
+        ((total_cores as f64 * 0.5).ceil() as usize).max(1)
+    } else {
+        1 // Unused fallback
+    };
+    
+    let mut num_workers: usize = max_threads.unwrap_or(default_threads as u32).clamp(1, max_workers as u32) as usize;
 
     // Check memory and clamp threads if max-threads was explicitly set OR check-memory flag is set
     if max_threads.is_some() || check_mem {

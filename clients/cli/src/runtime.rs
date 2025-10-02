@@ -3,13 +3,16 @@
 use crate::environment::Environment;
 use crate::events::Event;
 use crate::orchestrator::OrchestratorClient;
-use crate::workers::authenticated_worker::AuthenticatedWorker;
+use crate::workers::pipelined_worker::PipelinedWorker;
 use crate::workers::core::WorkerConfig;
 use ed25519_dalek::SigningKey;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
-/// Start single authenticated worker
+/// Start single authenticated worker with pipelined architecture
+/// 
+/// Uses pipelined processing by default for maximum throughput.
+/// This allows overlapping fetch/prove/submit stages to eliminate idle time.
 #[allow(clippy::too_many_arguments)]
 pub async fn start_authenticated_worker(
     node_id: u64,
@@ -35,7 +38,8 @@ pub async fn start_authenticated_worker(
     // Create a separate shutdown sender for max tasks completion
     let (shutdown_sender, _) = broadcast::channel(1);
 
-    let worker = AuthenticatedWorker::new(
+    // Use pipelined worker for improved throughput
+    let worker = PipelinedWorker::new(
         node_id,
         signing_key,
         orchestrator,

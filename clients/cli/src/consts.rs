@@ -27,7 +27,9 @@ pub mod cli_consts {
     pub const SUBPROCESS_INTERNAL_ERROR_CODE: i32 = 3;
 
     /// "Reasonable" generic projection task memory requirement.
-    pub const PROJECTED_MEMORY_REQUIREMENT: u64 = 4294967296; // 4gb
+    /// Reduced from 4GB to 3GB based on typical usage patterns.
+    /// This allows more threads on memory-constrained systems while maintaining safety margin.
+    pub const PROJECTED_MEMORY_REQUIREMENT: u64 = 3221225472; // 3gb
 
     // =============================================================================
     // DIFFICULTY CONFIGURATION
@@ -49,14 +51,15 @@ pub mod cli_consts {
         use std::time::Duration;
 
         /// Initial delay before retrying failed task fetch (milliseconds)
-        /// Set to 2 minutes to align with server task creation frequency
-        pub const INITIAL_BACKOFF_MS: u64 = 120_000;
+        /// Reduced from 120s to 108s (10% reduction) to test server tolerance
+        pub const INITIAL_BACKOFF_MS: u64 = 108_000;
         /// Maximum number of retry attempts for task fetching
         pub const MAX_RETRIES: u32 = 2;
 
         /// Minimum interval between task fetch requests (milliseconds)
-        /// Set to 2 minutes to align with server task creation frequency
-        pub const RATE_LIMIT_INTERVAL_MS: u64 = 120_000;
+        /// Reduced from 120s to 108s (10% reduction) for improved throughput
+        /// If server returns 429 (rate limit), this will be overridden by Retry-After header
+        pub const RATE_LIMIT_INTERVAL_MS: u64 = 108_000;
 
         /// Helper function to get initial backoff duration
         pub const fn initial_backoff() -> Duration {
