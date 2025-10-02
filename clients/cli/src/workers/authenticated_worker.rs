@@ -13,6 +13,10 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 /// Single authenticated worker that handles the complete task lifecycle
+/// 
+/// NOTE: Currently unused - replaced by PipelinedWorker for better performance.
+/// Kept as fallback option for sequential processing if needed.
+#[allow(dead_code)]
 pub struct AuthenticatedWorker {
     fetcher: TaskFetcher,
     prover: TaskProver,

@@ -26,10 +26,11 @@ pub mod cli_consts {
     /// Subprocess error code indicating an internal failure of the proving
     pub const SUBPROCESS_INTERNAL_ERROR_CODE: i32 = 3;
 
-    /// "Reasonable" generic projection task memory requirement.
-    /// Reduced from 4GB to 3GB based on typical usage patterns.
-    /// This allows more threads on memory-constrained systems while maintaining safety margin.
-    pub const PROJECTED_MEMORY_REQUIREMENT: u64 = 3221225472; // 3gb
+    /// Memory requirement per proving thread based on real-world usage.
+    /// Actual observed usage: ~1.25GB per thread (20 threads = 25GB total).
+    /// Set to 1.5GB with safety margin for task difficulty variations.
+    /// If you experience OOM errors (exit code 137), increase this value.
+    pub const PROJECTED_MEMORY_REQUIREMENT: u64 = 1610612736; // 1.5gb
 
     // =============================================================================
     // DIFFICULTY CONFIGURATION

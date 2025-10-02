@@ -8,7 +8,7 @@ use crate::orchestrator::OrchestratorClient;
 use crate::runtime::start_authenticated_worker;
 use ed25519_dalek::SigningKey;
 use std::error::Error;
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::System;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
@@ -41,8 +41,8 @@ fn clamp_threads_by_memory(requested_threads: usize) -> usize {
     let memory_per_thread = crate::consts::cli_consts::PROJECTED_MEMORY_REQUIREMENT;
 
     // Calculate max threads based on total system memory
-    // Reserve 25% of system memory for OS and other processes
-    let available_memory = (total_system_memory as f64 * 0.75) as u64;
+    // Reserve 10% of system memory for OS and other processes
+    let available_memory = (total_system_memory as f64 * 0.90) as u64;
     let max_threads_by_memory = (available_memory / memory_per_thread) as usize;
 
     // Return the minimum of requested threads and memory-limited threads
@@ -59,8 +59,8 @@ pub fn warn_memory_configuration(max_threads: Option<u32>) {
         // Get total system memory (not just current process memory)
         let total_system_memory = sysinfo.total_memory();
         
-        // Use 75% of system memory as available (reserve 25% for OS/other processes)
-        let available_memory = (total_system_memory as f64 * 0.75) as u64;
+        // Use 90% of system memory as available (reserve 10% for OS/other processes)
+        let available_memory = (total_system_memory as f64 * 0.90) as u64;
         let projected_usage = threads as u64 * crate::consts::cli_consts::PROJECTED_MEMORY_REQUIREMENT;
 
         if projected_usage >= available_memory {
@@ -131,7 +131,7 @@ pub async fn setup_session(
         if memory_clamped_workers < num_workers {
             crate::print_cmd_warn!(
                 "Memory limit",
-                "Reduced thread count from {} to {} due to insufficient memory. Each thread requires ~4GB RAM.",
+                "Reduced thread count from {} to {} due to insufficient memory. Each thread requires ~1.5GB RAM.",
                 num_workers,
                 memory_clamped_workers
             );

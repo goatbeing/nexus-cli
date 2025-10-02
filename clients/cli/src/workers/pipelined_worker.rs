@@ -14,8 +14,9 @@ use crate::prover::ProverResult;
 use crate::task::Task;
 
 use ed25519_dalek::SigningKey;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 /// Pipelined worker that overlaps fetch, prove, and submit stages for maximum throughput
@@ -69,7 +70,7 @@ impl PipelinedWorker {
     }
 
     /// Start the pipelined worker with overlapped stages
-    pub async fn run(mut self, mut shutdown: broadcast::Receiver<()>) -> Vec<JoinHandle<()>> {
+    pub async fn run(mut self, shutdown: broadcast::Receiver<()>) -> Vec<JoinHandle<()>> {
         let mut join_handles = Vec::new();
 
         // Create channels for pipeline stages
@@ -78,13 +79,16 @@ impl PipelinedWorker {
         let (proof_tx, mut proof_rx) = mpsc::channel::<(Task, ProverResult)>(2);
 
         // Shared state for tracking completed tasks and timing
-        let tasks_completed = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let tasks_completed_fetcher = tasks_completed.clone();
-        let tasks_completed_prover = tasks_completed.clone();
+        let tasks_completed = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let tasks_completed_submitter = tasks_completed.clone();
         
         // Channel to communicate timing data from prover to submitter
         let (timing_tx, mut timing_rx) = mpsc::channel::<u64>(10);
+
+        // Wrap fetcher in Arc<Mutex<>> for shared access between stages
+        let fetcher = Arc::new(Mutex::new(self.fetcher));
+        let fetcher_for_fetch = fetcher.clone();
+        let fetcher_for_submit = fetcher.clone();
 
         let shutdown_sender_clone = self.shutdown_sender.clone();
 
@@ -99,26 +103,29 @@ impl PipelinedWorker {
         // Stage 1: Task Fetcher (runs independently, respects rate limits)
         let mut shutdown_fetcher = self.shutdown_sender.subscribe();
         let fetcher_handle = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = shutdown_fetcher.recv() => {
-                        drop(task_tx); // Close channel to signal downstream
-                        break;
-                    }
-                    result = self.fetcher.fetch_task() => {
-                        match result {
-                            Ok(task) => {
-                                // Try to send task to prover stage
-                                if task_tx.send(task).await.is_err() {
-                                    // Channel closed, shutdown requested
-                                    break;
-                                }
-                            }
-                            Err(_) => {
-                                // Error already logged in fetcher, wait before retry
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-                            }
+            'fetch_loop: loop {
+                // Check for shutdown first
+                if shutdown_fetcher.try_recv().is_ok() {
+                    drop(task_tx); // Close channel to signal downstream
+                    break;
+                }
+
+                // Fetch task with lock
+                let mut fetcher_guard = fetcher_for_fetch.lock().await;
+                let result = fetcher_guard.fetch_task().await;
+                drop(fetcher_guard); // Release lock immediately
+                
+                match result {
+                    Ok(task) => {
+                        // Try to send task to prover stage
+                        if task_tx.send(task).await.is_err() {
+                            // Channel closed, shutdown requested
+                            break 'fetch_loop;
                         }
+                    }
+                    Err(_) => {
+                        // Error already logged in fetcher, wait before retry
+                        tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 }
             }
@@ -219,7 +226,9 @@ impl PipelinedWorker {
                                     };
                                     
                                     // Update difficulty tracking with actual timing
-                                    self.fetcher.update_success_tracking(duration_secs);
+                                    let mut fetcher_guard = fetcher_for_submit.lock().await;
+                                    fetcher_guard.update_success_tracking(duration_secs);
+                                    drop(fetcher_guard);
 
                                     self.event_sender
                                         .send_event(Event::state_change(
