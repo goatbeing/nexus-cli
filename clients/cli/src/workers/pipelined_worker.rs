@@ -82,8 +82,8 @@ impl PipelinedWorker {
         let tasks_completed = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let tasks_completed_submitter = tasks_completed.clone();
         
-        // Channel to communicate timing data from prover to submitter
-        let (timing_tx, mut timing_rx) = mpsc::channel::<u64>(10);
+        // Channel to communicate timing data and task info from prover to submitter
+        let (timing_tx, mut timing_rx) = mpsc::channel::<(u64, usize)>(10); // (duration_secs, task_size)
 
         // Wrap fetcher in Arc<Mutex<>> for shared access between stages
         let fetcher = Arc::new(Mutex::new(self.fetcher));
@@ -92,11 +92,11 @@ impl PipelinedWorker {
 
         let shutdown_sender_clone = self.shutdown_sender.clone();
 
-        // Send initial state
+        // Send initial state (match original exactly)
         self.event_sender
             .send_event(Event::state_change(
                 ProverState::Waiting,
-                "Ready to fetch tasks (pipelined mode)".to_string(),
+                "Ready to fetch tasks".to_string(),
             ))
             .await;
 
@@ -162,22 +162,15 @@ impl PipelinedWorker {
                                         // Calculate duration for this task
                                         let duration = start_time.elapsed();
                                         let duration_secs = duration.as_secs();
+                                        let task_size = task.public_inputs_list.len();
 
                                         // Send to submit stage
                                         if proof_tx.send((task.clone(), proof_result)).await.is_err() {
                                             break; // Channel closed
                                         }
 
-                                        // Send timing data for difficulty adjustment
-                                        let _ = timing_tx.send(duration_secs).await;
-
-                                        // Store duration for difficulty tracking (handled in submitter)
-                                        event_sender_prover
-                                            .send_event(Event::state_change(
-                                                ProverState::Waiting,
-                                                format!("Proof completed in {}s", duration_secs),
-                                            ))
-                                            .await;
+                                        // Send timing data and task size for difficulty adjustment and logging
+                                        let _ = timing_tx.send((duration_secs, task_size)).await;
                                     }
                                     Err(_) => {
                                         // Error already logged, continue to next task
@@ -219,24 +212,31 @@ impl PipelinedWorker {
                                         std::sync::atomic::Ordering::SeqCst
                                     ) + 1;
 
-                                    // Try to get timing data for difficulty adjustment
-                                    let duration_secs = match timing_rx.try_recv() {
-                                        Ok(secs) => secs,
-                                        Err(_) => 60, // Conservative fallback
+                                    // Try to get timing data and task size
+                                    let (duration_secs, task_size) = match timing_rx.try_recv() {
+                                        Ok((secs, size)) => (secs, size),
+                                        Err(_) => (60, task.public_inputs_list.len()), // Conservative fallback
                                     };
                                     
-                                    // Update difficulty tracking with actual timing
+                                    // Update difficulty tracking with actual timing and get difficulty
                                     let mut fetcher_guard = fetcher_for_submit.lock().await;
                                     fetcher_guard.update_success_tracking(duration_secs);
+                                    let difficulty = fetcher_guard
+                                        .last_success_difficulty
+                                        .map(|d| d.as_str_name())
+                                        .unwrap_or("Unknown");
                                     drop(fetcher_guard);
 
+                                    // Format message like original: "task_id completed, Task size: X, Duration: Xs, Difficulty: Y"
                                     self.event_sender
                                         .send_event(Event::state_change(
                                             ProverState::Waiting,
                                             format!(
-                                                "Task {} completed successfully (total: {})",
+                                                "{} completed, Task size: {}, Duration: {}s, Difficulty: {}",
                                                 task.task_id,
-                                                completed
+                                                task_size,
+                                                duration_secs,
+                                                difficulty
                                             ),
                                         ))
                                         .await;
@@ -255,6 +255,14 @@ impl PipelinedWorker {
                                             break;
                                         }
                                     }
+
+                                    // Send "ready for next task" message (match original behavior)
+                                    self.event_sender
+                                        .send_event(Event::state_change(
+                                            ProverState::Waiting,
+                                            "Task completed, ready for next task".to_string(),
+                                        ))
+                                        .await;
                                 }
                             }
                             None => {
